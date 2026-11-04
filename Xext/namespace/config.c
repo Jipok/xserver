@@ -16,6 +16,7 @@
 #include "dix/dix_priv.h"
 #include "dix/extension_priv.h"
 #include "dix/resource_priv.h"
+#include "dix/selection_priv.h"
 
 #include "namespace.h"
 #include "namespaceproto.h"
@@ -427,10 +428,17 @@ Bool XnsNamespaceHasFocus(const struct Xnamespace *ns)
 {
     if (!ns)
         return FALSE;
+    if (ns->superPower)
+        return TRUE;
+    if (ns->inputFocusUntil &&
+        (int32_t)(ns->inputFocusUntil - GetTimeInMillis()) > 0)
+        return TRUE;
+
     DeviceIntPtr kbd = inputInfo.keyboard;
+    DeviceIntPtr ptr = inputInfo.pointer;
+
     WindowPtr win = (kbd && kbd->focus) ? kbd->focus->win : NullWindow;
     if (!win || win == NoneWin || win == PointerRootWin || win == FollowKeyboardWin) {
-        DeviceIntPtr ptr = inputInfo.pointer;
         if (ptr && ptr->spriteInfo && ptr->spriteInfo->sprite)
             win = ptr->spriteInfo->sprite->win;
     }
@@ -438,6 +446,77 @@ Bool XnsNamespaceHasFocus(const struct Xnamespace *ns)
         return FALSE;
     struct XnamespaceClientPriv *ownerPriv = XnsClientPriv(dixClientForWindow(win));
     return (ownerPriv && ownerPriv->ns == ns);
+}
+
+void XnsGrantInputFocusTicket(struct Xnamespace *ns)
+{
+    if (!ns)
+        return;
+    CARD32 until = GetTimeInMillis() + 1000;
+    if (!until)
+        until = 1;
+    ns->inputFocusUntil = until;
+}
+
+Bool XnsIsInputEvent(const xEvent *ev)
+{
+    int type = ev->u.u.type & 0x7f;
+    if (type == ButtonPress || type == ButtonRelease ||
+        type == KeyPress || type == KeyRelease)
+        return TRUE;
+    if (type == GenericEvent) {
+        const xGenericEvent *gev = (const xGenericEvent *)&ev->u;
+        if (gev->extension == EXTENSION_MAJOR_XINPUT &&
+            (gev->evtype == XI_ButtonPress || gev->evtype == XI_ButtonRelease ||
+             gev->evtype == XI_KeyPress || gev->evtype == XI_KeyRelease))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+Bool XnsIsSensitiveRootProperty(const struct Xnamespace *ns, Atom prop)
+{
+    const char *name = NameForAtom(prop);
+    if (!name)
+        return FALSE;
+    if (streq(name, "_NET_CLIENT_LIST") ||
+        streq(name, "_NET_CLIENT_LIST_STACKING") ||
+        streq(name, "_NET_ACTIVE_WINDOW") ||
+        streq(name, "_NET_SUPPORTING_WM_CHECK") ||
+        streq(name, "_WIN_CLIENT_LIST"))
+        return TRUE;
+    if (ns && !ns->allowClipboard && strncmp(name, "CUT_BUFFER", 10) == 0)
+        return TRUE;
+    return FALSE;
+}
+
+Bool XnsIsDesktopSelection(Atom selection)
+{
+    const char *name = NameForAtom(selection);
+    if (!name)
+        return FALSE;
+    if (strncmp(name, "_NET_SYSTEM_TRAY_S", 18) == 0 ||
+        strncmp(name, "_NET_WM_CM_S", 12) == 0 ||
+        strncmp(name, "WM_S", 4) == 0)
+        return TRUE;
+    return FALSE;
+}
+
+Bool XnsIsSystemTrayWindow(WindowPtr pWin)
+{
+    if (!pWin)
+        return FALSE;
+    for (Selection *s = CurrentSelections; s; s = s->next) {
+        if (s->window != pWin->drawable.id || !s->client)
+            continue;
+        struct XnamespaceClientPriv *priv = XnsClientPriv(s->client);
+        if (!priv || !priv->ns || !priv->ns->superPower)
+            continue;
+        const char *name = NameForAtom(s->selection);
+        if (name && strncmp(name, "_NET_SYSTEM_TRAY_S", 18) == 0)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 Bool XnsOwnsGlobalSelection(const struct Xnamespace *ns, Atom selection)

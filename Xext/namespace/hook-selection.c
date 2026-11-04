@@ -61,6 +61,13 @@ void hookSelectionFilter(CallbackListPtr *pcbl, void *unused, void *calldata)
         return;
     }
 
+    /* Allow confined clients to discover and watch host WM, compositor, and
+       system tray manager selections without allowing them to take ownership */
+    if ((param->op == SELECTION_FILTER_GETOWNER ||
+         param->op == SELECTION_FILTER_LISTEN) &&
+        XnsIsDesktopSelection(param->selection))
+        return;
+
     /* Smart auto-clipboard mode (focus-gated copy + physical press while focused) */
     if (subj->ns->allowClipboardAuto) {
         switch (param->op) {
